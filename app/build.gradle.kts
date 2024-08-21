@@ -355,6 +355,10 @@ fun createMetaPythonFile(node: ClassNode, outputDir: File): File {
     val className = node.name.substringAfterLast('/')
     val packageDir = File(outputDir, packagePath)
     packageDir.mkdirs()
+
+    val initPyFile = File(packageDir, "__init__.py")
+    initPyFile.appendText("from ${node.name.substringAfterLast('/')} import ${node.name.substringAfterLast('/')}\n")
+
     return File(packageDir, "$className.pyi")
 }
 
@@ -410,8 +414,14 @@ fun generateMetaPythonClass(node: ClassNode, pyFile: File, allClasses: Map<Strin
                 .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
                 .filter { !it.name.startsWith("<") }
 
+            val isCompanion = nestedClassName == "Companion"
+
+            if (className.contains("$")) {
+                println(className)
+            }
+
             generateMetaPythonClassFields(writer, nestedFields, "$className.$nestedClassName", "        ")
-            generateMetaPythonClassMethods(writer, nestedMethods, "        ")
+            generateMetaPythonClassMethods(writer, nestedMethods, "        ", isCompanionMethod = isCompanion)
         }
     }
 }
@@ -427,7 +437,8 @@ fun generateMetaPythonClassFields(writer: java.io.BufferedWriter, fields: List<F
             className
         })
         if (fieldName.contains("INSTANCE")) {
-            writer.write("\n${indent}INSTANCE: $className = __meta__.INSTANCE\n")
+//            writer.write("\n${indent}INSTANCE: $className = __meta__.INSTANCE\n")
+            writer.write("\n${indent}INSTANCE: $className = ...\n")
         } else {
             writer.write("\n$indent$fieldName: $fieldType = __meta__.$fieldName\n")
         }
@@ -435,7 +446,7 @@ fun generateMetaPythonClassFields(writer: java.io.BufferedWriter, fields: List<F
 }
 
 
-fun generateMetaPythonClassMethods(writer: java.io.BufferedWriter, methods: List<MethodNode>, indent: String = "    ") {
+fun generateMetaPythonClassMethods(writer: java.io.BufferedWriter, methods: List<MethodNode>, indent: String = "    ", isCompanionMethod: Boolean = false) {
     val methodGroups = methods.groupBy { it.name.substringBefore('$') }
     val nameSpace = mutableListOf<String>()
 
@@ -445,7 +456,13 @@ fun generateMetaPythonClassMethods(writer: java.io.BufferedWriter, methods: List
         val converted = baseName.removeAfterDash()
         val pythonName = converted.convertToPythonMethodName()
         if (nameSpace.contains(pythonName)) return@forEach
-        writer.write("${indent}def $pythonName(self, *args, **kwargs): ...\n")
+
+        if (isCompanionMethod) { // If Companion feild
+            writer.write("        @staticmethod\n${indent}def $pythonName(*args, **kwargs): ...\n")
+        } else {
+            writer.write("${indent}def $pythonName(self, *args, **kwargs): ...\n")
+        }
+
 //        writer.write("${indent}    __meta__.${group.first().name.stripeDash()}(*args, **kwargs)\n")
         nameSpace.add(pythonName)
     }
