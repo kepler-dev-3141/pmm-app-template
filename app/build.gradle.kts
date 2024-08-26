@@ -2,7 +2,6 @@ import com.google.gson.Gson
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.*
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
-import org.jetbrains.kotlin.gradle.targets.js.dsl.ExperimentalWasmDsl
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.tree.ClassNode
@@ -334,100 +333,96 @@ fun processJarForMetaPackage(jarPath: String, outputDir: File) {
         val sortedClasses = classNodes.toSortedMap()
 
         // Generate Python files for each class
-        sortedClasses.values.forEach { node ->
-            val pyFile = createMetaPythonFile(node, outputDir)
-            generateMetaPythonClass(node, pyFile, classNodes)
-        }
+//        sortedClasses.values.forEach { node ->
+//            val pyFile = createInitPythonFile(node, outputDir)
+//            generateMetaPythonClass(node, pyFile, classNodes)
+//        }
 
         // Then, process only top-level classes
         classNodes.values.forEach { node ->
             if (!node.name.contains('$') && !node.access.hasFlag(Opcodes.ACC_PRIVATE) && !node.access.hasFlag(Opcodes.ACC_PROTECTED)) {
-                val pyFile = createMetaPythonFile(node, outputDir)
+                val pyFile = createInitPythonFile(node, outputDir)
                 generateMetaPythonClass(node, pyFile, classNodes)
             }
         }
     }
 }
 
-
-fun createMetaPythonFile(node: ClassNode, outputDir: File): File {
+fun createInitPythonFile(node: ClassNode, outputDir: File): File {
     val packagePath = node.name.substringBeforeLast('/').replace('/', File.separatorChar)
-    val className = node.name.substringAfterLast('/')
     val packageDir = File(outputDir, packagePath)
     packageDir.mkdirs()
-
-    val initPyFile = File(packageDir, "__init__.py")
-    initPyFile.appendText("from ${node.name.substringAfterLast('/')} import ${node.name.substringAfterLast('/')}\n")
-
-    return File(packageDir, "$className.pyi")
+    return File(packageDir, "__init__.pyi")
 }
-
 
 fun generateMetaPythonClass(node: ClassNode, pyFile: File, allClasses: Map<String, ClassNode>) {
     val className = node.name.substringAfterLast('/')
     val nestedClasses = mutableMapOf<String, ClassNode>()
 
-    // print methods
-//    node.methods.forEach {
-//        println(it.name)
-//    }
+    if (pyFile.length().toInt() == 0) { // If file empty
+        pyFile.appendText("class $className:\n")
+    } else { // If not empty
+        pyFile.appendText("\nclass $className:\n")
+    }
 
-    pyFile.bufferedWriter().use { writer ->
-        //writer.write("from __future__ import annotations\n\n\n")
+    val fields = node.fields
+        .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
+        .filter { !it.name.startsWith("\$") }
+        .filter { !it.name.startsWith("Companion") }
 
-        writer.write("class $className:\n")
+    val methods = node.methods
+        .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
+        .filter { !it.name.startsWith("<") }
 
-        val fields = node.fields
+    generateMetaPythonClassFields(pyFile, fields, className)
+    generateMetaPythonClassMethods(pyFile, methods)
+
+    // Process nested classes
+    node.innerClasses.forEach { innerClass ->
+        if (innerClass.name.startsWith(node.name) && innerClass.name != node.name) {
+            val nestedClassName = innerClass.name.substringAfterLast('$')
+            allClasses[innerClass.name]?.let { nestedClassNode ->
+                nestedClasses[nestedClassName] = nestedClassNode
+            }
+        }
+    }
+
+    // Generate nested classes
+    nestedClasses.forEach { (nestedClassName, nestedClassNode) ->
+        // Skip anonymous classes
+        if (nestedClassName.toIntOrNull() != null) return@forEach
+
+        pyFile.appendText("\n    class $nestedClassName:\n")
+
+        val nestedFields = nestedClassNode.fields
             .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
             .filter { !it.name.startsWith("\$") }
-            .filter { !it.name.startsWith("Companion") }
 
-        val methods = node.methods
+        val nestedMethods = nestedClassNode.methods
             .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
             .filter { !it.name.startsWith("<") }
 
-        generateMetaPythonClassFields(writer, fields, className)
-        generateMetaPythonClassMethods(writer, methods)
+        generateMetaPythonClassFields(pyFile, nestedFields, "$className.$nestedClassName", "        ")
+        generateMetaPythonClassMethods(pyFile, nestedMethods, "        ")
 
-        // Process nested classes
-        node.innerClasses.forEach { innerClass ->
-            if (innerClass.name.startsWith(node.name) && innerClass.name != node.name) {
-                val nestedClassName = innerClass.name.substringAfterLast('$')
-                allClasses[innerClass.name]?.let { nestedClassNode ->
-                    nestedClasses[nestedClassName] = nestedClassNode
-                }
-            }
+        if (nestedFields.isEmpty() && nestedMethods.isEmpty()) {
+            generateMetaPythonEmptyClass(pyFile, indent = "    ")
         }
+    }
 
-        // Generate nested classes
-        nestedClasses.forEach { (nestedClassName, nestedClassNode) ->
-            // Skip anonymous classes
-            if (nestedClassName.toIntOrNull() != null) return@forEach
-
-            writer.write("\n    class $nestedClassName:\n")
-
-            val nestedFields = nestedClassNode.fields
-                .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
-                .filter { !it.name.startsWith("\$") }
-
-            val nestedMethods = nestedClassNode.methods
-                .filter { !it.access.hasFlag(Opcodes.ACC_PRIVATE) && !it.access.hasFlag(Opcodes.ACC_PROTECTED) }
-                .filter { !it.name.startsWith("<") }
-
-            val isCompanion = nestedClassName == "Companion"
-
-            if (className.contains("$")) {
-                println(className)
-            }
-
-            generateMetaPythonClassFields(writer, nestedFields, "$className.$nestedClassName", "        ")
-            generateMetaPythonClassMethods(writer, nestedMethods, "        ", isCompanionMethod = isCompanion)
-        }
+    if (methods.isEmpty() && fields.isEmpty() && nestedClasses.isEmpty()) {
+        generateMetaPythonEmptyClass(pyFile)
+//        println("non field found in $className, ${node.name}")
     }
 }
 
 
-fun generateMetaPythonClassFields(writer: java.io.BufferedWriter, fields: List<FieldNode>, className: String, indent: String = "    ") {
+fun generateMetaPythonEmptyClass(pyFile: File, indent: String = "") {
+    pyFile.appendText("$indent    ...\n")
+}
+
+
+fun generateMetaPythonClassFields(pyFile: File, fields: List<FieldNode>, className: String, indent: String = "    ") {
     fields.forEach { field ->
         val fieldName = field.name
         val fieldType = field.desc.toReadableType(if (className.contains(".")) {
@@ -437,16 +432,15 @@ fun generateMetaPythonClassFields(writer: java.io.BufferedWriter, fields: List<F
             className
         })
         if (fieldName.contains("INSTANCE")) {
-//            writer.write("\n${indent}INSTANCE: $className = __meta__.INSTANCE\n")
-            writer.write("\n${indent}INSTANCE: $className = ...\n")
+            pyFile.appendText("\n${indent}INSTANCE: $className\n")
         } else {
-            writer.write("\n$indent$fieldName: $fieldType = __meta__.$fieldName\n")
+            pyFile.appendText("\n$indent$fieldName: ${fieldType.substringAfterLast('.')}\n")
         }
     }
 }
 
 
-fun generateMetaPythonClassMethods(writer: java.io.BufferedWriter, methods: List<MethodNode>, indent: String = "    ", isCompanionMethod: Boolean = false) {
+fun generateMetaPythonClassMethods(pyFile: File, methods: List<MethodNode>, indent: String = "    ") {
     val methodGroups = methods.groupBy { it.name.substringBefore('$') }
     val nameSpace = mutableListOf<String>()
 
@@ -454,15 +448,9 @@ fun generateMetaPythonClassMethods(writer: java.io.BufferedWriter, methods: List
 //        val hasAnnotations = group.any { it.name.contains('$') }
 //        val converted = baseName.convertToSnakeCase().stripeDash()  // Replace Kotlin's special characters
         val converted = baseName.removeAfterDash()
-        val pythonName = converted.convertToPythonMethodName()
-        if (nameSpace.contains(pythonName)) return@forEach
-
-        if (isCompanionMethod) { // If Companion feild
-            writer.write("        @staticmethod\n${indent}def $pythonName(*args, **kwargs): ...\n")
-        } else {
-            writer.write("${indent}def $pythonName(self, *args, **kwargs): ...\n")
-        }
-
+        val pythonName = converted // .convertToPythonMethodName()
+//        if (nameSpace.contains(pythonName)) return@forEach
+        pyFile.appendText("${indent}def $pythonName(self, *args, **kwargs): ...\n")
 //        writer.write("${indent}    __meta__.${group.first().name.stripeDash()}(*args, **kwargs)\n")
         nameSpace.add(pythonName)
     }
@@ -513,41 +501,41 @@ fun String.convertToSnakeCase(): String = this.fold("") { acc, char ->
 }.trimStart('_')
 
 
-fun String.convertToPythonMethodName(): String = when (this) {
-    "from" -> "_from_"
-    "global" -> "_global_"
-    "import" -> "_import_"
-    "lambda" -> "_lambda_"
-    "nonlocal" -> "_nonlocal_"
-    "raise" -> "_raise_"
-    "try" -> "_try_"
-    "with" -> "_with_"
-    "yield" -> "_yield_"
-
-    "to_string" -> "__str__"
-    "to_int" -> "__int__"
-    "to_float" -> "__float__"
-    "to_bool" -> "__bool__"
-    "to_bytes" -> "__bytes__"
-    "to_list" -> "__list__"
-    "to_tuple" -> "__tuple__"
-    "to_set" -> "__set__"
-    "to_frozenset" -> "__frozenset__"
-    "to_dict" -> "__dict__"
-
-    "add" -> "__add__"
-    "sub" -> "__sub__"
-    "mul" -> "__mul__"
-    "truediv" -> "__truediv__"
-    "floordiv" -> "__floordiv__"
-    "mod" -> "__mod__"
-    "pow" -> "__pow__"
-    "equal" -> "__eq__"
-    "equals" -> "__eq__"
-    "hash" -> "__hash__"
-    "hash_code" -> "__hash__"
-    "length" -> "__len__"
-    "copy" -> "__copy__"
-
-    else -> this
-}
+//fun String.convertToPythonMethodName(): String = when (this) {
+//    "from" -> "_from_"
+//    "global" -> "_global_"
+//    "import" -> "_import_"
+//    "lambda" -> "_lambda_"
+//    "nonlocal" -> "_nonlocal_"
+//    "raise" -> "_raise_"
+//    "try" -> "_try_"
+//    "with" -> "_with_"
+//    "yield" -> "_yield_"
+//
+//    "to_string" -> "__str__"
+//    "to_int" -> "__int__"
+//    "to_float" -> "__float__"
+//    "to_bool" -> "__bool__"
+//    "to_bytes" -> "__bytes__"
+//    "to_list" -> "__list__"
+//    "to_tuple" -> "__tuple__"
+//    "to_set" -> "__set__"
+//    "to_frozenset" -> "__frozenset__"
+//    "to_dict" -> "__dict__"
+//
+//    "add" -> "__add__"
+//    "sub" -> "__sub__"
+//    "mul" -> "__mul__"
+//    "truediv" -> "__truediv__"
+//    "floordiv" -> "__floordiv__"
+//    "mod" -> "__mod__"
+//    "pow" -> "__pow__"
+//    "equal" -> "__eq__"
+//    "equals" -> "__eq__"
+//    "hash" -> "__hash__"
+//    "hash_code" -> "__hash__"
+//    "length" -> "__len__"
+//    "copy" -> "__copy__"
+//
+//    else -> this
+//}
